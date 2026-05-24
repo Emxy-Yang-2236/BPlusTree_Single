@@ -434,6 +434,7 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context *ctx, page_id_t current_page_id)
     throw Exception("Unmatch context and page_id in HandleUnderFlow");
   }
 
+  //root特判
   if (ctx->IsRootPage(current_page_id))
   {
     auto root_page = ctx->write_set_.back().template AsMut<BPlusTreePage>();
@@ -459,14 +460,16 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context *ctx, page_id_t current_page_id)
     return;
   }
 
+  //if is leaf_page
   if (ctx->write_set_.back().As<BPlusTreePage>()->IsLeafPage())
   {
     auto leaf_page = ctx->write_set_.back().AsMut<LeafPage>();
     auto &parent_guard = ctx->write_set_[ctx->write_set_.size()-2];
     auto parent_page = parent_guard.AsMut<InternalPage>();
+    auto parent_page_id = parent_guard.PageId();
 
     int child_idx = 0;
-    for (; child_idx < parent_page->GetSize(); ++parent_page)
+    for (; child_idx < parent_page->GetSize(); ++child_idx)
     {
       if (parent_page->ValueAt(child_idx) == current_page_id) break;
     }
@@ -478,16 +481,20 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context *ctx, page_id_t current_page_id)
       auto right_leaf_page_guard = bpm_->FetchPageWrite(right_leaf_page_id);
       auto right_leaf_page = right_leaf_page_guard.template AsMut<LeafPage>();
 
-      if (right_leaf_page->GetSize() > right_leaf_page->GetMinSize() + 1)
+      if (right_leaf_page->GetSize() > right_leaf_page->GetMinSize())
       {
-        auto [borrow_key, borrow_val] = std::make_pair(right_leaf_page->KeyAt(0), right_leaf_page->ValueAt(0));
-        parent_page->SetKeyAt(child_idx + 1, borrow_key);
+        auto [borrow_key, borrow_val] =
+          std::make_pair(right_leaf_page->KeyAt(0), right_leaf_page->ValueAt(0));
+        parent_page->SetKeyAt(child_idx + 1, right_leaf_page->KeyAt(1));
         leaf_page->SetAt(leaf_page->GetSize(), borrow_key, borrow_val);
 
         for (int i = 1; i < right_leaf_page->GetSize(); ++i)
         {
           right_leaf_page->SetAt(i-1, right_leaf_page->KeyAt(i), right_leaf_page->ValueAt(i));
         }
+
+        right_leaf_page->SetSize(right_leaf_page->GetSize()-1);
+        leaf_page->SetSize(leaf_page->GetSize()+1);
 
         return;
       }
@@ -500,25 +507,259 @@ void BPLUSTREE_TYPE::HandleUnderflow(Context *ctx, page_id_t current_page_id)
       auto left_leaf_page_guard = bpm_->FetchPageWrite(left_leaf_page_id);
       auto left_leaf_page = left_leaf_page_guard.template AsMut<LeafPage>();
 
-      if (left_leaf_page->GetSize() > left_leaf_page->GetMinSize() + 1)
+      if (left_leaf_page->GetSize() > left_leaf_page->GetMinSize())
       {
         int left_size = left_leaf_page->GetSize(), leaf_size = leaf_page->GetSize();
         auto [borrow_key, borrow_val] = std::make_pair(left_leaf_page->KeyAt(left_size - 1), left_leaf_page->ValueAt(left_size - 1));
         parent_page->SetKeyAt(child_idx, borrow_key);
         left_leaf_page->SetSize(left_size - 1);
 
-        for (int i = 1; i <= leaf_size; ++i)
-        {
-          leaf_page->SetAt(i, leaf_page->KeyAt(i-1), leaf_page->ValueAt(i-1));
+        for (int i = leaf_size - 1; i >= 0; --i) {
+          leaf_page->SetAt(i + 1, leaf_page->KeyAt(i), leaf_page->ValueAt(i));
         }
         leaf_page->SetAt(0, borrow_key, borrow_val);
+
+        leaf_page->SetSize(leaf_page->GetSize()+1);
 
         return;
       }
     }
 
-    //try to merge
+    //try to merge from left
+    if (child_idx - 1 >= 0)
+    {
+      auto left_leaf_page_id = parent_page->ValueAt(child_idx - 1);
+      auto left_leaf_page_guard = bpm_->FetchPageWrite(left_leaf_page_id);
+      auto left_leaf_page = left_leaf_page_guard.template AsMut<LeafPage>();
+
+      int left_size = left_leaf_page->GetSize(), size = leaf_page->GetSize();
+      for (int i = 0; i < size; ++i)
+      {
+        left_leaf_page->SetAt(left_size + i, leaf_page->KeyAt(i), leaf_page->ValueAt(i));
+      }
+      left_leaf_page->SetNextPageId(leaf_page->GetNextPageId());
+      left_leaf_page->SetSize(left_size + size);
+      leaf_page->SetSize(0);
+
+      for (int i = child_idx; i < parent_page->GetSize()-1; ++i)
+      {
+        parent_page->SetKeyAt(i, parent_page->KeyAt(i+1));
+        parent_page->SetValueAt(i, parent_page->ValueAt(i+1));
+      }
+      parent_page->SetSize(parent_page->GetSize() - 1);
+
+      if (ctx->IsRootPage(parent_page_id) || parent_page->GetSize() < parent_page->GetMinSize()) {
+        ctx->write_set_.pop_back();
+        HandleUnderflow(ctx, parent_page_id);
+      }
+
+      return;
+    }
+
+    //try to merge from right
+    if (child_idx + 1 < parent_page->GetSize())
+    {
+      auto right_leaf_page_id = parent_page->ValueAt(child_idx + 1);
+      auto right_leaf_page_guard = bpm_->FetchPageWrite(right_leaf_page_id);
+      auto right_leaf_page = right_leaf_page_guard.template AsMut<LeafPage>();
+
+      int right_size = right_leaf_page->GetSize(), size = leaf_page->GetSize();
+      for (int i = 0; i < right_size; ++i)
+      {
+        leaf_page->SetAt(size + i, right_leaf_page->KeyAt(i), right_leaf_page->ValueAt(i));
+      }
+      leaf_page->SetNextPageId(right_leaf_page->GetNextPageId());
+
+      leaf_page->SetSize(right_size + size);
+      right_leaf_page->SetSize(0);
+
+      for (int i = child_idx+1; i < parent_page->GetSize()-1; ++i)
+      {
+        parent_page->SetKeyAt(i, parent_page->KeyAt(i+1));
+        parent_page->SetValueAt(i, parent_page->ValueAt(i+1));
+      }
+      parent_page->SetSize(parent_page->GetSize() - 1);
+
+      if (ctx->IsRootPage(parent_page_id) || parent_page->GetSize() < parent_page->GetMinSize()) {
+        ctx->write_set_.pop_back();
+        HandleUnderflow(ctx, parent_page_id);
+      }
+
+      return;
+    }
   }
+
+  //if is internal page
+  auto internal_page = ctx->write_set_.back().AsMut<InternalPage>();
+  auto &parent_guard = ctx->write_set_[ctx->write_set_.size()-2];
+  auto parent_page = parent_guard.AsMut<InternalPage>();
+
+  int child_idx = 0;
+  for (; child_idx < parent_page->GetSize(); ++child_idx)
+  {
+    if (parent_page->ValueAt(child_idx) == current_page_id) break;
+  }
+
+  auto parent_page_id = parent_guard.PageId();
+
+  //try to borrow from right
+  if (child_idx + 1 < parent_page->GetSize())
+  {
+    auto right_internal_page_id = parent_page->ValueAt(child_idx + 1);
+    auto right_internal_page_guard = bpm_->FetchPageWrite(right_internal_page_id);
+    auto right_internal_page = right_internal_page_guard.template AsMut<InternalPage>();
+
+    if (right_internal_page->GetSize() > right_internal_page->GetMinSize())
+    {
+      auto [borrow_key, borrow_val] =
+        std::make_pair(parent_page->KeyAt(child_idx+1), right_internal_page->ValueAt(0));
+      parent_page->SetKeyAt(child_idx+1, right_internal_page->KeyAt(1));
+
+      int size = internal_page->GetSize();
+      internal_page->SetValueAt(size,borrow_val);
+      internal_page->SetKeyAt(size,borrow_key);
+
+      right_internal_page->SetValueAt(0,right_internal_page->ValueAt(1));
+      for (int i = 1; i < right_internal_page->GetSize()-1; ++i)
+      {
+        right_internal_page->SetValueAt(i, right_internal_page->ValueAt(i+1));
+        right_internal_page->SetKeyAt(i, right_internal_page->KeyAt(i+1));
+      }
+
+      right_internal_page->SetSize(right_internal_page->GetSize()-1);
+      internal_page->SetSize(internal_page->GetSize()+1);
+
+      return;
+    }
+  }
+
+  // 2. try to borrow from left internal sibling
+  if (child_idx - 1 >= 0) {
+    page_id_t left_internal_page_id = parent_page->ValueAt(child_idx - 1);
+    auto left_internal_page_guard = bpm_->FetchPageWrite(left_internal_page_id);
+    auto left_internal_page = left_internal_page_guard.template AsMut<InternalPage>();
+
+    if (left_internal_page->GetSize() > left_internal_page->GetMinSize()) {
+      int left_size = left_internal_page->GetSize();
+      int cur_size = internal_page->GetSize();
+
+      // left 最后一个 child 借给 current，变成 current 的最左 child
+      page_id_t borrowed_child = left_internal_page->ValueAt(left_size - 1);
+
+      // left 最后一个有效 key 上升到 parent
+      KeyType new_parent_key = left_internal_page->KeyAt(left_size - 1);
+
+      // parent 原 separator 下放到 current
+      KeyType down_key = parent_page->KeyAt(child_idx);
+
+      // current 整体右移一格。
+      for (int i = cur_size - 1; i >= 1; --i) {
+        internal_page->SetKeyAt(i + 1, internal_page->KeyAt(i));
+        internal_page->SetValueAt(i + 1, internal_page->ValueAt(i));
+      }
+
+      internal_page->SetKeyAt(1, down_key);
+      internal_page->SetValueAt(1, internal_page->ValueAt(0));
+      internal_page->SetValueAt(0, borrowed_child);
+      internal_page->SetSize(cur_size + 1);
+
+      left_internal_page->SetSize(left_size - 1);
+      parent_page->SetKeyAt(child_idx, new_parent_key);
+
+      return;
+    }
+  }
+
+  // =========================
+  // 3. merge current into left internal sibling if left exists
+  // =========================
+  if (child_idx - 1 >= 0) {
+    page_id_t left_internal_page_id = parent_page->ValueAt(child_idx - 1);
+    auto left_internal_page_guard = bpm_->FetchPageWrite(left_internal_page_id);
+    auto left_internal_page = left_internal_page_guard.template AsMut<InternalPage>();
+
+    int left_size = left_internal_page->GetSize();
+    int cur_size = internal_page->GetSize();
+
+    // parent separator 下沉到 left，连接 current 的 ValueAt(0)
+    KeyType down_key = parent_page->KeyAt(child_idx);
+
+    left_internal_page->SetKeyAt(left_size, down_key);
+    left_internal_page->SetValueAt(left_size, internal_page->ValueAt(0));
+
+    // current 的剩余有效 key/value 追加到 left 后面
+    for (int i = 1; i < cur_size; ++i) {
+      left_internal_page->SetKeyAt(left_size + i, internal_page->KeyAt(i));
+      left_internal_page->SetValueAt(left_size + i, internal_page->ValueAt(i));
+    }
+
+    left_internal_page->SetSize(left_size + cur_size);
+    internal_page->SetSize(0);
+
+    // 从 parent 删除 current 这个 child entry，也就是 child_idx
+    int parent_size = parent_page->GetSize();
+    for (int i = child_idx + 1; i < parent_size; ++i) {
+      if (i - 1 != 0) {
+        parent_page->SetKeyAt(i - 1, parent_page->KeyAt(i));
+      }
+      parent_page->SetValueAt(i - 1, parent_page->ValueAt(i));
+    }
+    parent_page->SetSize(parent_size - 1);
+
+    // merge 后 parent 可能下溢；如果 parent 是 root，也要让 root 特判执行，从而降低树高
+    if (ctx->IsRootPage(parent_page_id) || parent_page->GetSize() < parent_page->GetMinSize()) {
+      ctx->write_set_.pop_back();
+      HandleUnderflow(ctx, parent_page_id);
+    }
+
+    return;
+  }
+
+  // =========================
+  // 4. otherwise merge right internal sibling into current
+  // =========================
+  if (child_idx + 1 < parent_page->GetSize()) {
+    page_id_t right_internal_page_id = parent_page->ValueAt(child_idx + 1);
+    auto right_internal_page_guard = bpm_->FetchPageWrite(right_internal_page_id);
+    auto right_internal_page = right_internal_page_guard.template AsMut<InternalPage>();
+
+    int cur_size = internal_page->GetSize();
+    int right_size = right_internal_page->GetSize();
+
+    // parent separator 下沉到 current，连接 right 的 ValueAt(0)
+    KeyType down_key = parent_page->KeyAt(child_idx + 1);
+
+    internal_page->SetKeyAt(cur_size, down_key);
+    internal_page->SetValueAt(cur_size, right_internal_page->ValueAt(0));
+
+    // right 的剩余有效 key/value 追加到 current 后面
+    for (int i = 1; i < right_size; ++i) {
+      internal_page->SetKeyAt(cur_size + i, right_internal_page->KeyAt(i));
+      internal_page->SetValueAt(cur_size + i, right_internal_page->ValueAt(i));
+    }
+
+    internal_page->SetSize(cur_size + right_size);
+    right_internal_page->SetSize(0);
+
+    // 从 parent 删除 right 这个 child entry，也就是 child_idx + 1
+    int parent_size = parent_page->GetSize();
+    for (int i = child_idx + 2; i < parent_size; ++i) {
+      if (i - 1 != 0) {
+        parent_page->SetKeyAt(i - 1, parent_page->KeyAt(i));
+      }
+      parent_page->SetValueAt(i - 1, parent_page->ValueAt(i));
+    }
+    parent_page->SetSize(parent_size - 1);
+
+    if (ctx->IsRootPage(parent_page_id) || parent_page->GetSize() < parent_page->GetMinSize()) {
+      ctx->write_set_.pop_back();
+      HandleUnderflow(ctx, parent_page_id);
+    }
+
+    return;
+  }
+
+  throw Exception("HandleUnderflow: internal page has neither left nor right sibling");
 }
 
 /*****************************************************************************
@@ -643,12 +884,41 @@ auto BPLUSTREE_TYPE::Begin(const KeyType& key)  ->  INDEXITERATOR_TYPE
   }
   auto* leaf_page = reinterpret_cast<const LeafPage*>(tmp_page);
 
-  int slot_num = BinaryFind(leaf_page, key);
-  if (slot_num != -1)
-  {
-    return INDEXITERATOR_TYPE(bpm_, guard.PageId(), slot_num);
+  //initial ver
+  // int slot_num = BinaryFind(leaf_page, key);
+  // if (slot_num != -1)
+  // {
+  //   return INDEXITERATOR_TYPE(bpm_, guard.PageId(), slot_num);
+  // }
+  // return End();
+
+  int pred = BinaryFind(leaf_page, key);
+
+  int slot_num;
+  if (pred >= 0 && comparator_(leaf_page->KeyAt(pred), key) == 0) {
+    slot_num = pred;
+  } else {
+    slot_num = pred + 1;
   }
-  return End();
+
+  // 如果当前 leaf 中没有 >= key 的元素，就跳到 next leaf
+  while (slot_num >= leaf_page->GetSize()) {
+    page_id_t next_page_id = leaf_page->GetNextPageId();
+
+    if (next_page_id == INVALID_PAGE_ID) {
+      return End();
+    }
+
+    guard = bpm_->FetchPageRead(next_page_id);
+    leaf_page = guard.template As<LeafPage>();
+    slot_num = 0;
+
+    if (leaf_page->GetSize() > 0) {
+      break;
+    }
+  }
+
+  return INDEXITERATOR_TYPE(bpm_, guard.PageId(), slot_num);
 }
 
 /*
