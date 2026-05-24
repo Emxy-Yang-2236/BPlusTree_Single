@@ -112,7 +112,7 @@ message("Build mode: ${CMAKE_BUILD_TYPE}")
 message("${BUSTUB_SANITIZER} sanitizer will be enabled in debug mode.")
 
 # Compiler flags.
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra -Werror")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Wextra ") #deleted -Werror
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wno-unused-parameter -Wno-attributes") # TODO: remove
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -ggdb -fsanitize=${BUSTUB_SANITIZER} -fno-omit-frame-pointer -fno-optimize-sibling-calls")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -272,3 +272,12 @@ add_custom_target(submit-p1
 )
 
 add_dependencies(check-clang-tidy gtest bustub) # needs gtest headers, compile_commands.json
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+        add_compile_options(
+                -Wno-error=deprecated-literal-operator
+                -Wno-error=deprecated-declarations
+                -Wno-deprecated-literal-operator
+                -Wno-deprecated-declarations
+        )
+endif()

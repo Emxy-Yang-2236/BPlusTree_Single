@@ -62,7 +62,7 @@ INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_LEAF_PAGE_TYPE::SetAt(int index, const KeyType& key,
                                        const ValueType& value)
 {
-  if (index >= 0 && index < GetSize())
+  if (index >= 0 && index < GetMaxSize())
   {
     array_[index] = {key, value};
     return;

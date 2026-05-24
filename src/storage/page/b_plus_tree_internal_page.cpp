@@ -69,6 +69,18 @@ auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueAt(int index) const -> ValueType
 }
 
 INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::ValueIndex(const ValueType& value) const -> int
+{
+  for (int i = 0; i < GetSize(); i++) {
+    if (ValueAt(i) == value) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
 void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetValueAt(int index,
                                                 const ValueType& value)
 {

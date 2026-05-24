@@ -63,6 +63,7 @@ INDEX_TEMPLATE_ARGUMENTS
 class BPlusTree {
   using InternalPage = BPlusTreeInternalPage<KeyType, page_id_t, KeyComparator>;
   using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
+  using SplitResult = std::pair<page_id_t, KeyType>;
 
  public:
   explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
@@ -75,8 +76,26 @@ class BPlusTree {
   // Insert a key-value pair into this B+ tree.
   auto Insert(const KeyType &key, const ValueType &value, Transaction *txn = nullptr) -> bool;
 
+  //Insert the first key_value pair into the tree
+  auto StartNewTree(const KeyType& key, const ValueType& value,
+                    BPlusTreeHeaderPage* header) -> void;
+  page_id_t FindLeafForInsert(const KeyType& key, Context* ctx);
+  auto InsertIntoLeafPage(LeafPage* leaf_page, const KeyType& key,
+                          const ValueType& value) -> bool;
+  auto SplitLeafAndInsert(page_id_t old_leaf_page_id,
+                          LeafPage *old_leaf_page,
+                          const KeyType &key,
+                          const ValueType &value) -> SplitResult;
+
+  void InsertIntoParent(Context *ctx,
+                        page_id_t old_child_page_id,
+                        const KeyType &separator_key,
+                        page_id_t new_child_page_id);
+
   // Remove a key and its value from this B+ tree.
   void Remove(const KeyType &key, Transaction *txn);
+  auto FindLeafForRemove(const KeyType& key, Context* ctx) -> page_id_t;
+  void HandleUnderflow(Context* ctx, page_id_t current_page_id);
 
   // Return the value associated with a given key
   auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;

@@ -121,7 +121,7 @@ void WritePageGuard::Drop()
   {
     unlock_guard = true;
     //This avoids repetitive drop
-    guard_.page_ -> RUnlatch();
+    guard_.page_ -> WUnlatch();
     guard_.Drop();
   }
 }
